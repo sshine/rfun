@@ -1,8 +1,8 @@
 default:
-	alex RFUN/Lexer.x
-	ghc RFUN/Lexer.hs
-	happy RFUN/Parser.y -i
-	ghc RFUN/Parser.hs
+	alex Lexer.x
+	ghc Lexer.hs
+	happy Parser.y -i
+	ghc Parser.hs
 
 clean:
-	cd RFUN && rm -f *.hi *.o Lexer.hs Parser.hs
+	rm -f *.hi *.o Lexer.hs Parser.hs *.info
