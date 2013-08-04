@@ -1,0 +1,20 @@
+
+Exp : LeftExp                    { LeftExp $1 }
+    | let id '=' id Args in Exp  { Let (idName $2) (idName $4) $5 $7 }
+    | case id of Cases           { Case (idName $2) $4 }
+
+LeftExp : id                     { Var (idName $1) (getPos $1) }
+        | Nil                    { Nil (getPos $1) }
+        | Cons '(' LeftExps ')'  { Cons $3 (getPos $1) }
+
+LeftExps : id                    { [ idName $1 ] }
+         | id ',' LeftExps       { idName $1 : $3 }
+
+Args :          { [] }
+     | id Args  { idName $1 : $2 }
+
+Cases : Case            { [$1] }
+      | Case '|' Cases  { $1 : $3 }
+
+Case : Nil '->' Exp                { (Nil, [], $3) }
+     | Cons '(' Args ')' '->' Exp  { (Cons, $3, $6) }
