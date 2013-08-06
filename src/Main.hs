@@ -1,7 +1,13 @@
 
 module Main (main) where
 
-import RFUN.Syntax
-import RFUN.Lexer
-import RFUN.Parser
+import Control.Monad
 
+import Syntax
+import Lexer
+import Parser
+
+-- cat ../data/foo.rf | ./Main
+main :: IO ()
+main = do
+  liftM (putStrLn . show . parse . tokenize) getContents
