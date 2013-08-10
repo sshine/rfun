@@ -1,9 +1,14 @@
 
 module Syntax where
 
-import Lexer
+data Posn = Posn !Int !Int !Int
+          deriving Eq
 
-type Id = (AlexPosn, String)
+instance Show Posn where
+  show (Posn offset lineNo colNo) =
+    "(line " ++ show lineNo ++ ", column " ++ show colNo ++ ")"
+
+type Id = (Posn, String)
 
 data Prog = Prog { progDefns :: [Defn] }
           deriving (Show, Eq)
@@ -14,12 +19,11 @@ data Defn = Defn { defnName  :: Id
           deriving (Show, Eq)
 
 data Exp = LeftExp LeftExp
-         | Let Id Id [Id] Exp AlexPosn
-         | Case Id [(LeftExp, Exp)] AlexPosn
-         | Foo Id Id AlexPosn
+         | Let Id Id [Id] Exp Posn
+         | Case Id [(LeftExp, Exp)] Posn
          deriving (Show, Eq)
 
 data LeftExp = Var Id  --  Id stores posn
-             | Nil AlexPosn
-             | Cons [LeftExp] AlexPosn
+             | Nil Posn
+             | Cons [LeftExp] Posn
              deriving (Show, Eq)

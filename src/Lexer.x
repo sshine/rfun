@@ -5,52 +5,60 @@ module Lexer ( tokenize
              , getPos
              , getName ) where
 
+import Syntax
+
 }
 
 %wrapper "posn"
 
 tokens :-
 
-  $white+                 ;
-  "//".*                  ;
-  ":="    { const . DEFEQ }
-  "="     { const . ISEQ  }
-  "("     { const . LPAR  }
-  ")"     { const . RPAR  }
-  "->"    { const . ARROW }
-  "|"     { const . PIPE  }
-  ","     { const . COMMA }
-  "def"   { const . DEF   }
-  "let"   { const . LET   }
-  "in"    { const . IN    }
-  "case"  { const . CASE  }
-  "of"    { const . OF    }
-  "Cons"  { const . CONS  }
-  "Nil"   { const . NIL   }
-  [a-zA-Z_][a-zA-Z_]* { curry ID }
+  $white+             ;
+  "//".*              ;
+  ":="    { tok DEFEQ }
+  "="     { tok ISEQ  }
+  "("     { tok LPAR  }
+  ")"     { tok RPAR  }
+  "->"    { tok ARROW }
+  "|"     { tok PIPE  }
+  ","     { tok COMMA }
+  "def"   { tok DEF   }
+  "let"   { tok LET   }
+  "in"    { tok IN    }
+  "case"  { tok CASE  }
+  "of"    { tok OF    }
+  "Cons"  { tok CONS  }
+  "Nil"   { tok NIL   }
+  [a-z_][a-zA-Z0-9_]* { \p s -> ID (posn p, s) }
 
 {
 
+posn :: AlexPosn -> Posn
+posn (AlexPn offset lineNo colNo) = (Posn offset lineNo colNo)
+
+tok :: (Posn -> Token) -> AlexPosn -> String -> Token
+tok t = const . t . posn
+
 -- Available tokens
-data Token = DEFEQ AlexPosn
-           | ISEQ  AlexPosn
-           | LPAR  AlexPosn
-           | RPAR  AlexPosn
-           | ARROW AlexPosn
-           | PIPE  AlexPosn
-           | COMMA AlexPosn
-           | DEF   AlexPosn
-           | LET   AlexPosn
-           | IN    AlexPosn
-           | CASE  AlexPosn
-           | OF    AlexPosn
-           | CONS  AlexPosn
-           | NIL   AlexPosn
-           | ID   (AlexPosn, String)
+data Token = DEFEQ Posn
+           | ISEQ  Posn
+           | LPAR  Posn
+           | RPAR  Posn
+           | ARROW Posn
+           | PIPE  Posn
+           | COMMA Posn
+           | DEF   Posn
+           | LET   Posn
+           | IN    Posn
+           | CASE  Posn
+           | OF    Posn
+           | CONS  Posn
+           | NIL   Posn
+           | ID   (Posn, String)
            deriving (Show, Eq)
 
 -- Extract the position of a Token
-getPos :: Token -> AlexPosn
+getPos :: Token -> Posn
 getPos tok =
   case tok of
     DEFEQ   posn -> posn
