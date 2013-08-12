@@ -5,5 +5,11 @@ default:
 	ghc Parser
 	ghc Main
 
+main:
+	ghc Main
+
 clean:
 	rm -f *.hi *.o Lexer.hs Parser.hs *.info Main
+
+test:
+	cat ../data/mirror.rf | ./Main
