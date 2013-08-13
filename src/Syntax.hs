@@ -27,3 +27,36 @@ data LeftExp = Var Id  --  Id stores posn
              | Nil Posn
              | Cons [LeftExp] Posn
              deriving (Show, Eq)
+
+{- 1
+  / \
+ 2   3  ~~>  1
+            /
+           2
+            \
+             3 -}
+
+
+noPosn :: Posn
+noPosn = Posn 0 0 0
+
+nil' :: LeftExp
+nil' = Nil noPosn
+
+-- -- Return: left (...), right (siblings, so far)
+-- binarify :: LeftExp -> (LeftExp, LeftExp)
+-- binarify lexp =
+--   case lexp of
+--     Cons []     posn -> (Cons [] posn, nil')
+--     Cons (c:cs) posn -> let (c', c_sib) = binarify c
+--                             c_sib' = insertSibling 
+--                         in Cons (c':c_sib':[]) posn
+
+
+{- 1           1
+  /|\         /
+ 2 3 4  ~~>  2  
+/|          / \
+56         5   3
+            \   \
+             6   4 -}

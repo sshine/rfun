@@ -31,3 +31,4 @@ data PISA = -- Data instructions
   | SWAPBR Reg
   | SWAP Reg Reg  -- not in PISA article, but in heap article
   | LABEL Label
+  deriving (Show, Eq)

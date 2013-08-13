@@ -7,6 +7,7 @@ import Syntax
 import Lexer
 import Parser
 import Pretty
+import Code
 
 -- cat ../data/foo.rf | ./Main
 main :: IO ()
