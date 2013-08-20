@@ -1,0 +1,4 @@
+
+def a = Cons (Nil, Nil)
+def b = Cons (a, Nil)
+def c = Cons (Nil, a)

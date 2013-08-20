@@ -1,0 +1,30 @@
+// First, define Peano natural numbers
+def zero   := Nil
+def succ n := Cons (Nil, n)
+
+// Second, define natural numbers in terms of binary trees
+def eon     := Cons (Nil, Nil)
+def zero_   := Cons (eon, Nil)              // 0, one digit
+def one_    := Cons (Nil, eon)              // 1, one digit
+def two_    := Cons (Cons (Nil, eon), Nil)  // 10, two digits
+def three_  := Cons (Nil, Cons (Nil, eon))  // 11, two digits
+
+def succ_ b :=
+    case b of
+        Nil -> one_
+      | Cons (lzero, rone) ->
+            case 
+
+
+// convert a peano-representation number into binary tree-representation number
+def convert a := aux a zero_
+def a_to_b a := aux_ab a zero_b
+def aux_ab a b :=
+    case a of
+         Nil          -> b
+       | Cons (_, tl) -> aux_ab tl (succ_b b)
+
+// b_to_a may be easy...
+def b_to_a b := aux_ba b 
+
+
