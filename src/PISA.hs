@@ -1,5 +1,6 @@
 
-module PISA where
+module PISA -- (PISA(..), prettyPISA, inversePISA)
+       where
 
 import Data.List
 
@@ -36,6 +37,10 @@ data PISA = -- Data instructions
   | SWAP Reg Reg  -- not in PISA article, but in heap article
   | LABEL Label
   deriving (Show, Eq)
+
+inversePISA :: [PISA] -> [PISA]
+inversePISA = undefined
+
 
 prettyPISA :: [PISA] -> String
 prettyPISA prog = go prog
@@ -81,8 +86,8 @@ prettyReg 1 = "$hp"
 prettyReg 2 = "$sp"
 prettyReg 3 = "$ro"
 prettyReg 4 = "$flp"
-prettyReg 5 = "$cell"
-prettyReg n = show n
+prettyReg 5 = "$ret"
+prettyReg n = "$" ++ show n
 
 prettyImm :: Imm -> String
 prettyImm = show
