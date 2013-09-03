@@ -1,6 +1,8 @@
+
 def mirror t :=
     case t of
         Nil         -> Nil
       | Cons (a, b) -> let c = mirror a in
                        let d = mirror b in
                        Cons (d, c)
+

@@ -39,7 +39,21 @@ data PISA = -- Data instructions
   deriving (Show, Eq)
 
 inversePISA :: [PISA] -> [PISA]
-inversePISA = undefined
+inversePISA = reverse . map inv
+  where
+    inv :: PISA -> PISA
+    -- Duals
+    inv (ADD rega regb) = SUB rega regb
+    inv (SUB rega regb) = ADD rega regb
+    inv (ADDI reg imm)  = SUBI reg imm
+    inv (SUBI reg imm)  = ADDI reg imm
+    -- Own inverses
+    inv (XOR  rega regb) = XOR rega regb
+    inv (EXCH rega regM) = EXCH rega regM
+    -- Branching
+    inv (BRA label) = BRA label
+    inv (BEQ rega regb label) = BEQ rega regb label
+    inv (BNE rega regb label) = BNE rega regb label
 
 
 prettyPISA :: [PISA] -> String
@@ -91,3 +105,33 @@ prettyReg n = "$" ++ show n
 
 prettyImm :: Imm -> String
 prettyImm = show
+
+---------- A collection of special-purpose registers: ----------
+
+-- Zero register
+regZero :: Reg
+regZero = 0
+
+-- Heap pointer
+regHp :: Reg
+regHp = 1
+
+-- Stack pointer
+regSp :: Reg
+regSp = 2
+
+-- Return offset, see [Clean Translation ..., sect. 4.2]
+regRo :: Reg
+regRo = 3
+
+-- Free-list pointer
+regFlp :: Reg
+regFlp = 4
+
+-- Return address for getfree()
+regRet :: Reg
+regRet = 5
+
+-- Minimal free register
+regAllocStart :: Reg
+regAllocStart = 6

@@ -1,113 +1,186 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Code where
 
 import Control.Monad
 import Control.Monad.State
+import Control.Monad.Reader
 import Control.Applicative
 
 import qualified Data.Map as M
+import qualified Data.Set as S
+import Data.Maybe
 
 import Syntax
 import PISA
 
--- | The CodeGenEnv keeps track of register allocation, ...
-data CodeGenEnv = CodeGenEnv { regAllocStack :: [Reg]
-                             , regAllocNext  :: Reg 
-                             , varRegs       :: M.Map String Reg
-                             }
-                deriving (Show, Eq)
+{--- TODO ---
+
+  * Initialize free-list pointer (regFlp) in generated code
+
+-}
+
+-- | A concatMap for monads
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f = liftM concat . mapM f
+
+-- | A State-modifier 
+modify' f = get <* modify f
+
+-- | The RegAllocEnv type keeps track of register allocation
+data RegAllocEnv = RegAllocEnv { regAllocStack :: [Reg]
+                               , regAllocNext  :: Reg
+                               , nextLabel :: Int
+                               }
+                 deriving (Show, Eq)
+
+-- | The VarRegs type keeps track of variable->register binding
+type VarRegs = M.Map VName Reg
 
 
 -- | The CodeGen monad
-type CodeGen a = State CodeGenEnv a
+newtype CodeGen a =
+  CodeGen { runCodeGen :: StateT RegAllocEnv (Reader VarRegs) a }
+  deriving (MonadState RegAllocEnv, MonadReader VarRegs,
+            Applicative, Functor, Monad)
 
--- | A monadic concatMap
-concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
-concatMapM f xs = liftM concat (mapM f xs)
+-- Constants
+nilC :: Int
+nilC = 0
 
+consC :: Int
+consC = 1
 
 -- | Translate a given program, remove monad after use
 translate :: Prog -> [PISA]
 translate prog =
-  fst $ runState (translateProg prog) initState
-  where initState = CodeGenEnv { regAllocStack = []
-                               , regAllocNext = regAllocStart
-                               , varRegs = M.empty
-                               }
-
+  runReader (evalStateT (runCodeGen (translateProg prog)) regAlloc) varRegs
+  where
+    varRegs  = M.empty
+    regAlloc = RegAllocEnv [] regAllocStart
 
 -- | Translate a given program within a CodeGen monad
 translateProg :: Prog -> CodeGen [PISA]
-translateProg = liftM concat . mapM translateDefn . progDefns
+translateProg = concatMapM translateDefn . progDefns
 
+-- wrap defn in function call code
 translateDefn :: Defn -> CodeGen [PISA]
 translateDefn defn =
-  case defnTerms defn of
-    [] -> do reg <- allocReg
-             translateExp (defnBody defn) reg
-    ts -> return []
+  let args = defnTerms defn
+  in callwrapM (defnName defn) $ do
+    -- pop arguments from stack into registers
+    (regs, code1) <- popVars (length args)
+    -- associate registers with variables
+    local $ putVarsRegs args regs $ do
+      -- translate function body
+      reg <- allocReg
+      code2 <- translateExp (defnBody defn) reg
+      mapM_ freeReg $ reg : regs   --- investigate: are regs zeroed before freeing?
+      return $ code1 ++ code2
 
 translateExp :: Exp -> Reg -> CodeGen [PISA]
 translateExp exp reg =
   case exp of
     LeftExp lexp -> translateLeftExp lexp reg
-    Let (_, var) fID argIDs body _ -> do    -- let x = f y z in body
-      -- swap termIDs to the stack
-      code1 <- concatMapM (\(_, var) -> do
-                              reg <- getVarReg var
-                              return [ EXCH reg regSp
-                                     , ADDI regSp 1 ]) argIDs
-      -- call function f, store result in new register
-      reg <- allocReg
-      code2 <- return [ BRA (funCallLabel fID) 
-                      , SWAP regRet reg ]
-      bindVar var reg
-      -- swap termIDs back from the stack (assume their uncomputation happened)
-      code3 <- return $ inversePISA code1
-      -- Q: where is it good to place uncomputation of function arguments? function epilogue?
-      -- translate body and store result in 'reg'
-      code4 <- translateExp body regRet -- since regRet is 0 due to 'SWAP regRet reg' above
-      removeVar var  -- replace with local ReaderT binding
-      return $ code1 ++ code2 ++ code3 ++ code4
+    Let (_, var) (_, fname) args body _ -> do    -- let x = f y z in body
+      -- push function arguments to stack
+      code1 <- pushVars args
+      -- call function f, store result (placed on stack) in regRet
+      regRet <- allocReg
+      code2 <- return [ BRA fname
+                      , EXCH regRet regSp
+                      , SUBI regSp 1 ]
+      -- bind var to reg and translate function body
+      local $ putVarReg var reg $ do
+        code3 <- translateExp body reg
+        return $ code1 ++ code2 ++ code3
 
--- This method should probably remove vname from table
-getVarReg :: String -> CodeGen Reg
-getVarReg vname = do
-  env <- get
-  return $ M.findWithDefault err vname (varRegs env)
-  where
-    err = error $ "Variable " ++ vname ++ " was not found."
+    -- case x of Nil -> e
+    Case var [(Nil _, e)] _ -> do
+      memReg <- getVarReg var
+      eCode <- translateExp e reg
+      return $ [ EXCH reg memReg
+               , BNE reg regZero "error" ] -- if it wasn't a Nil
+               ++ eCode
 
-bindVar :: String -> Reg -> CodeGen ()
-bindVar var reg =
-  modify $ \env -> env { varRegs = M.insert var reg (varRegs env) }
+    -- case x of Cons (a, b) -> e
+    Case var [(Cons [Var leftId, Var rightId] _, body)] _ -> do
+      memReg <- getVarReg var
+      leftReg <- allocReg
+      rightReg <- allocReg
+      vars <- return [leftId, rightId]
+      regs <- return [leftReg, rightReg]
+      local $ putVarsRegs vars regs $ do
+        bodycode <- translateExp e reg
+        return $ [ EXCH reg memReg   -- temporarily use reg
+                 , SUBI reg 1
+                 , BNE reg regZero "error" -- if it wasn't a Cons
+                 , ADDI memReg 1
+                 , EXCH leftReg memReg
+                 , ADDI memReg 1
+                 , EXCH rightReg memReg
+                 ] ++ bodycode    -- this seems done
+        
+    -- case x of Cons (a, b) -> e1 | Nil -> e2
+    --  `~> case x of Nil -> e2 | Cons (a, b) -> e1
+    Case var [cons@(Cons _ _, _), nil@(Nil _, _)] posn ->
+      let exp' = Case var [nil, cons] posn
+      in translateExp exp' reg
 
--- TODO: Until varRegs is replaced with ReaderT, assume unique variables
--- This is an insufficient assumption for recursion.
-removeVar :: String -> CodeGen ()
-removeVar var =
-  modify $ \env -> env { varRegs = M.delete var (varRegs env) }
+    -- case x of Nil -> nilbody | Cons (a, b) -> consbody
+    Case var [(Nil _, nilbody), (Cons [Var lvar, Var rvar] _, consbody)] _ -> do
+      regE <- allocReg    -- not sure if I can use 'reg' temporarily
+      regT <- allocReg    -- constructor register
+      memReg <- getVarReg var
+      
+      [
 
--- | Get the jump label for a function wrapped in call-convention code
-funCallLabel :: Id -> String
-funCallLabel (_posn, vname) = "f_" ++ vname
+      [ BNE regT regZero "error" ] ++
+      condCode
 
-{-
-Swap $x, $y, $z to stack:
 
-EXCH $x $sp
-ADDI $sp 1
-EXCH $y $sp
-ADDI $sp 1
-EXCH $z $sp
-ADDI $sp
 
--}
+--       codeNil <- translateExp nilbody reg
+--       codeCons <- case conspat of
+--                     Cons [Var leftId, Var rightId] _ -> do
+--                       leftReg  <- allocReg
+--                       rightReg <- allocReg
+--                       vars <- return [leftId, rightId]
+--                       regs <- return [leftReg, rightReg]
+--                       local $ putVarsRegs vars regs $ do
+--                         translateExp consbody reg
+
+--       codeCase <- return $ [                    EXCH cReg memReg ]
+--                         ++ [ LABEL "bla"      , BNE cReg regZero "case_cons" ] -- cheat: nilC = 0
+--                         ++ codeNil
+--                         ++ [ LABEL "case_cons", BRA "bla" ]
+--                         ++ codeCons
+--                         ++ [ 
+--       return codeCase
+
+-- [ BNE regT regZero "error" ] ++
+-- translateExpCond eCond regEc ++
+-- [ XOR regT regEc ] ++
+-- inverseEcCode ++
+-- [ LABEL "test", BEQ regT regZero "test_false"
+--               ,  XORI regT 1 ] ++
+-- trueCode ++
+-- [ XORI regT 
+
+
+-- | Translate expression and interpret result as boolean.
+-- `regE` contains [[e]] and `regC` contains [[e]]c
+translateExpCond :: Exp -> Reg -> Reg -> CodeGen [PISA]
+translateExpCond eCond regE regC = do
+  code1 <- translateExp eCond regE
+  return $ code1 ++ [ LABEL "cond_top", BEQ regE regZero "cond_bot"
+                                      , XORI regC 1
+                    , LABEL "cond_bot", BEQ regE regZero "cond_top" ]
 
 -- | Translate left-expressions (Nil, Cons, Var)
 translateLeftExp :: LeftExp -> Reg -> CodeGen [PISA]
 translateLeftExp (Nil _) regDest =
-  return [ BRA "getfree"
+  return [ BRA "getfree"   -- regRet now contains pointer to heap
          , XORI regDest nilC
          , EXCH regDest regRet ]
 
@@ -117,8 +190,9 @@ translateLeftExp (Cons (l:r:_) _) regDest = do
   leftTreeCode <- translateLeftExp l regL
   rightTreeCode <- translateLeftExp r regR
   return $ leftTreeCode ++ rightTreeCode ++
-    [ BRA "getfree"        -- regRet <- get_free()
-    , XORI regDest consC   -- regDest <- cons
+    [ BRA "getfree"       -- regRet <- get_free()
+    , EXCH regDest regSp
+    , XORI regDest consC  -- regDest <- cons
     , ADDI regRet 1       -- regRet <- regRet + 1
     , EXCH regL regRet    -- regL <-> M(regRet)
     , ADDI regRet 1       -- regRet <- regRet + 1
@@ -126,44 +200,25 @@ translateLeftExp (Cons (l:r:_) _) regDest = do
     , SUBI regRet 2       -- regRet <- regRet - 2
     ]
 
-translateLeftExp (Var (_, vname)) regDest = return []
+translateLeftExp (Var (_, vname)) regDest = do
+  memReg <- getVarReg vname
+  return [ EXCH regDest memReg ]  -- regDest <-> M(reg)
 
----------- A collection of special-purpose registers: ----------
 
--- Zero register
-regZero :: Reg
-regZero = 0
 
--- Heap pointer
-regHp :: Reg
-regHp = 1
 
--- Stack pointer
-regSp :: Reg
-regSp = 2
 
--- Return offset
-regRetOff :: Reg
-regRetOff = 3
+------------------------------------------------------------------------
+-- Helper functions                                                   --
+------------------------------------------------------------------------
 
--- Free-list pointer
-regFlp :: Reg
-regFlp = 4
+-- | Generate new unique label name
+newLabel :: String -> CodeGen String
+newLabel prefix = do
+  env <- modify' $ \env -> env { nextLabel = nextLabel env + 1 }
+  return $ prefix ++ "_" ++ show (nextLabel env)
 
--- Register containing the address of a getFree call
--- (or the return value of any function/procedure call)
-regRet :: Reg
-regRet = 5
-
--- Minimal free register
-regAllocStart :: Reg
-regAllocStart = 6
-
--- Assume that an arbitrary amount of symbolic registers exist, but allow for
--- returning used ones to a pool.  When it can be asserted, during compilation,
--- that a register contains zero and will not be needed locally, return it to
--- the allocator.  Do not regard spilling yet.  This is very manual.
-
+-- | Allocate register
 allocReg :: CodeGen Reg
 allocReg = do
   env <- get
@@ -175,43 +230,81 @@ allocReg = do
       put $ env { regAllocStack = stack }
       return reg
 
+
+-- | Return register to allocation
 freeReg :: Reg -> CodeGen ()
 freeReg reg = modify $ \env -> env { regAllocStack = reg:regAllocStack env }
 
--- Constants
-nilC :: Int
-nilC = 0
 
-consC :: Int
-consC = 1
+-- | Return register that stores a variable
+-- TODO: Perhaps remove variable from table
+getVarReg :: Id -> CodeGen Reg
+getVarReg (_, vname) =
+  asks $ fromMaybe err . M.lookup vname
+  where
+    err = error $ "Variable not bound to register: " ++ vname
 
--- wrap a function body in call-convention code (from article)
-callwrapper :: Label -> [PISA] -> [PISA]
-callwrapper flab fcode =
+
+-- | Associate variable with register
+putVarReg :: Id -> Reg -> VarRegs -> VarRegs
+putVarReg = M.insert
+
+-- | Pairwise associate sets of variables and registers
+putVarsRegs :: [Id] -> [Reg] -> VarRegs -> VarRegs
+putVarsRegs ids regs varRegs = foldr (uncurry M.insert) varRegs $ zip ids regs
+
+-- putVarsRegs ids regs = local (insertMany vars regs)
+--   where insertMany :: [Id] -> [Reg] -> VarRegs -> VarRegs
+--         insertMany [] [] varRegs = varRegs
+--         insertMany (id:ids) (reg:regs) varRegs =
+--           insertMany ids regs (M.insert id reg varRegs)
+
+
+-- | Push variables to the stack, free their registers
+pushVars :: [Id] -> CodeGen [PISA]
+pushVars = concatMapM pushVar
+  where pushVar (_, vname) = do
+          reg <- getVarReg vname
+          freeReg reg
+          return [ EXCH reg regSp, ADDI regSp 1]
+
+-- | Pop n variables from the stack, return registers and generating code
+popVars :: Int -> CodeGen ([Reg], [PISA])
+popVars 0 = return ([], [])
+popVars n = do
+  reg <- allocReg
+  (regs, code) <- popVars (n-1)
+  return (regs ++ [reg], code ++ [ SUBI regSp 1, EXCH reg regSp ])
+
+
+-- | Wrap a function in calling convention code: `callwrap fId fcode`
+callwrap :: Id -> [PISA] -> [PISA]
+callwrap (_, fname) fcode =
   [ LABEL ftop, BRA  fbot
               , SUBI regSp 1
-              , EXCH regRetOff regSp
-  , LABEL flab, SWAPBR regRetOff
-              , NEG  regRetOff
-              , EXCH regRetOff regSp
+              , EXCH regRo regSp
+  , LABEL flab, SWAPBR regRo
+              , NEG  regRo
+              , EXCH regRo regSp
               , ADDI regSp 1 ]
   ++ fcode ++
   [ LABEL fbot, BRA ftop ]
   where
-    ftop = flab ++ "_top"
-    fbot = flab ++ "_bot"
+    ftop = fname ++ "_top"
+    flab = fname
+    fbot = fname ++ "_bot"
 
--- getfree code, to be placed once in the generated code.
--- combination of article 1 (get_free pseudocode) and clean p. 155
-getFreeCode :: Reg -> [PISA]
-getFreeCode destReg =
-  callwrapper "getfree"
+callwrapM :: Id -> CodeGen [PISA] -> CodeGen [PISA]
+callwrapM fId codeM = liftM (callwrap fId) codeM
+
+getfreeCode :: [PISA]
+getfreeCode =
+  callwrap (undefined, "getfree") $
   [ LABEL "getfree"     , BNE  regFlp regZero "getfree_else"
-                        , XOR  destReg regHp
+                        , XOR  regRet regHp
                         , ADDI regHp 3
                         , BRA "getfree_end"
   , LABEL "getfree_else", BRA "getfree"
-                        , EXCH destReg regFlp   --   M(regFlp)
-                        , SWAP destReg regFlp   --   M(regFlp)
+                        , EXCH regRet regFlp   --   M(regFlp)
+                        , SWAP regRet regFlp   --   M(regFlp)
   , LABEL "getfree_end" , BEQ  regFlp regZero "TODO..." ]
-

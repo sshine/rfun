@@ -8,7 +8,9 @@ instance Show Posn where
   show (Posn offset lineNo colNo) =
     "(line " ++ show lineNo ++ ", column " ++ show colNo ++ ")"
 
-type Id = (Posn, String)
+type VName = String
+
+type Id = (Posn, VName)
 
 data Prog = Prog { progDefns :: [Defn] }
           deriving (Show, Eq)
@@ -27,6 +29,7 @@ data LeftExp = Var Id  --  Id stores posn
              | Nil Posn
              | Cons [LeftExp] Posn
              deriving (Show, Eq)
+
 
 {- 1
   / \
