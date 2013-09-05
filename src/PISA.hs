@@ -36,8 +36,10 @@ data PISA = -- Data instructions
   | SWAPBR Reg
   | SWAP Reg Reg  -- not in PISA article, but in heap article
   | LABEL Label
+  | FINISH
   deriving (Show, Eq)
 
+-- Partial function defined only for instructions used in code generation
 inversePISA :: [PISA] -> [PISA]
 inversePISA = reverse . map inv
   where
@@ -48,14 +50,19 @@ inversePISA = reverse . map inv
     inv (ADDI reg imm)  = SUBI reg imm
     inv (SUBI reg imm)  = ADDI reg imm
     -- Own inverses
+    inv (NEG reg) = NEG reg
     inv (XOR  rega regb) = XOR rega regb
+    inv (XORI reg imm)   = XORI reg imm
     inv (EXCH rega regM) = EXCH rega regM
     -- Branching
     inv (BRA label) = BRA label
     inv (BEQ rega regb label) = BEQ rega regb label
     inv (BNE rega regb label) = BNE rega regb label
+    -- Don't invert these
+    inv (LABEL label) = LABEL label
+    inv FINISH = FINISH
 
-
+-- | Pretty-print PISA code (assume only one label per address)
 prettyPISA :: [PISA] -> String
 prettyPISA prog = go prog
   where
@@ -90,6 +97,7 @@ prettyInstr instr =
     BRA lab       -> "BRA "  ++ lab
     RBRA lab      -> "RBRA " ++ lab
     BEQ r1 r2 lab -> "BEQ "  ++ prettyRegs [r1, r2] ++ " " ++ lab
+    FINISH        -> "FINISH"
 
 prettyRegs :: [Reg] -> String
 prettyRegs = intercalate " " . map prettyReg

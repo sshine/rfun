@@ -17,9 +17,10 @@ generation.  The code generator targets PISA, described in ``The Pendulum
 instruction set architecture'', an instruction set summary by Holger Bock
 Axelsen from 2006.
 
-As an aid, inspiration was drawn from additional articles, ``Clean translation
-of an imperative reversible programming language'' by Holger Bock Axelsen, 2011,
-in particular calling convention code and translation of conditionals.
+As an aid, inspiration was drawn from the article, ``Clean translation of an
+imperative reversible programming language'' by Holger Bock Axelsen, 2011, in
+particular the overall program structure and calling convention code is copied,
+and translation of conditionals has been repurposed.
 
 Writing this compiler has been an experience in reversible machine code and
 structuring a compiler from scratch using monad transformers.

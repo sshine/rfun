@@ -14,17 +14,11 @@ import Data.Maybe
 import Syntax
 import PISA
 
-{--- TODO ---
-
-  * Initialize free-list pointer (regFlp) in generated code
-
--}
-
--- | A concatMap for monads
+-- | A concatMap for lists inside arbitrary monads
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f = liftM concat . mapM f
 
--- | A State-modifier 
+-- | A State-modifier that returns the previous state
 modify' f = get <* modify f
 
 -- | The RegAllocEnv type keeps track of register allocation
@@ -67,7 +61,7 @@ translateProg = concatMapM translateDefn . progDefns
 translateDefn :: Defn -> CodeGen [PISA]
 translateDefn defn =
   let args = defnTerms defn
-  in callwrapM (defnName defn) $ do
+  in callwrap (defnName defn) $ do
     -- pop arguments from stack into registers
     (regs, code1) <- popVars (length args)
     -- associate registers with variables
@@ -111,8 +105,8 @@ translateExp exp reg =
       vars <- return [leftId, rightId]
       regs <- return [leftReg, rightReg]
       local $ putVarsRegs vars regs $ do
-        bodycode <- translateExp e reg
-        return $ [ EXCH reg memReg   -- temporarily use reg
+        bodycode <- translateExp body reg
+        return $ [ EXCH reg memReg   -- temporarily use reg to store constructor
                  , SUBI reg 1
                  , BNE reg regZero "error" -- if it wasn't a Cons
                  , ADDI memReg 1
@@ -127,55 +121,47 @@ translateExp exp reg =
       let exp' = Case var [nil, cons] posn
       in translateExp exp' reg
 
-    -- case x of Nil -> nilbody | Cons (a, b) -> consbody
-    Case var [(Nil _, nilbody), (Cons [Var lvar, Var rvar] _, consbody)] _ -> do
-      regE <- allocReg    -- not sure if I can use 'reg' temporarily
-      regT <- allocReg    -- constructor register
+    -- case x of Nil -> nilBody | Cons (a, b) -> consBody
+    Case var [(Nil _, nilBody), (Cons [Var lvar, Var rvar] _, consBody)] _ -> do
+      regE <- allocReg    -- compile either nil or cons body to this register
+      regT <- allocReg    -- 
       memReg <- getVarReg var
+
+      consCode <- translateExp consBody regE
+      nilCode  <- translateExp nilBody  regE
       
-      [
+      consCaseL <- newLabel "consCaseL"
+      assTrueL  <- newLabel "assertTrue"
+      nilCaseL  <- newLabel "testNil"
+      assertL   <- newLabel "assert"
 
-      [ BNE regT regZero "error" ] ++
-      condCode
-
-
-
---       codeNil <- translateExp nilbody reg
---       codeCons <- case conspat of
---                     Cons [Var leftId, Var rightId] _ -> do
---                       leftReg  <- allocReg
---                       rightReg <- allocReg
---                       vars <- return [leftId, rightId]
---                       regs <- return [leftReg, rightReg]
---                       local $ putVarsRegs vars regs $ do
---                         translateExp consbody reg
-
---       codeCase <- return $ [                    EXCH cReg memReg ]
---                         ++ [ LABEL "bla"      , BNE cReg regZero "case_cons" ] -- cheat: nilC = 0
---                         ++ codeNil
---                         ++ [ LABEL "case_cons", BRA "bla" ]
---                         ++ codeCons
---                         ++ [ 
---       return codeCase
-
--- [ BNE regT regZero "error" ] ++
--- translateExpCond eCond regEc ++
--- [ XOR regT regEc ] ++
--- inverseEcCode ++
--- [ LABEL "test", BEQ regT regZero "test_false"
---               ,  XORI regT 1 ] ++
--- trueCode ++
--- [ XORI regT 
+      (return $ [                  BNE  reg regZero "error"
+                                 , EXCH reg memReg
+                , LABEL consCaseL, BEQ  reg regZero nilCaseL  -- otherwise, Cons
+                                 , XORI reg 1
+                                 , BNE  reg regZero "error"
+                                 , XORI regT 1 ] -- need this information on assertion
+         ++ consCode ++
+         [ LABEL assTrueL , BRA assertL
+         , LABEL nilCaseL , BRA consCaseL ]
+         ++ nilCode ++
+         [ LABEL assertL  , BNE regT regZero assTrueL ]) <* do
+        -- Clean up registers
+        freeReg regT
+        --freeReg regE --this should be cleaned up when it's deconstructed
 
 
 -- | Translate expression and interpret result as boolean.
 -- `regE` contains [[e]] and `regC` contains [[e]]c
-translateExpCond :: Exp -> Reg -> Reg -> CodeGen [PISA]
-translateExpCond eCond regE regC = do
-  code1 <- translateExp eCond regE
-  return $ code1 ++ [ LABEL "cond_top", BEQ regE regZero "cond_bot"
-                                      , XORI regC 1
-                    , LABEL "cond_bot", BEQ regE regZero "cond_top" ]
+-- This code is an unnecessary code bit from \cite{clean}.
+--
+-- translateExpCond :: Exp -> Reg -> Reg -> CodeGen [PISA]
+-- translateExpCond eCond regE regC = do
+--   code1 <- translateExp eCond regE
+--   return $ code1 ++
+--            [ LABEL "cond_top", BEQ regE regZero "cond_bot"
+--                              , XORI regC 1
+--            , LABEL "cond_bot", BEQ regE regZero "cond_top" ]
 
 -- | Translate left-expressions (Nil, Cons, Var)
 translateLeftExp :: LeftExp -> Reg -> CodeGen [PISA]
@@ -277,34 +263,38 @@ popVars n = do
   return (regs ++ [reg], code ++ [ SUBI regSp 1, EXCH reg regSp ])
 
 
--- | Wrap a function in calling convention code: `callwrap fId fcode`
-callwrap :: Id -> [PISA] -> [PISA]
-callwrap (_, fname) fcode =
-  [ LABEL ftop, BRA  fbot
-              , SUBI regSp 1
-              , EXCH regRo regSp
-  , LABEL flab, SWAPBR regRo
-              , NEG  regRo
-              , EXCH regRo regSp
-              , ADDI regSp 1 ]
-  ++ fcode ++
-  [ LABEL fbot, BRA ftop ]
-  where
-    ftop = fname ++ "_top"
-    flab = fname
-    fbot = fname ++ "_bot"
+-- | Wrap a function in calling convention code
+callwrap :: Id -> CodeGen [PISA] -> CodeGen [PISA]
+callwrap (_, fname) codeGen = do
+  ftop <- newLabel (fname ++ "_top")
+  flab <- newLabel  fname
+  fbot <- newLabel (fname ++ "_bot")
+  fcode <- codeGen
+  return $
+    [ LABEL ftop, BRA  fbot
+                , SUBI regSp 1
+                , EXCH regRo regSp
+    , LABEL flab, SWAPBR regRo
+                , NEG  regRo
+                , EXCH regRo regSp
+                , ADDI regSp 1 ]
+    ++ fcode ++
+    [ LABEL fbot, BRA ftop ]
 
-callwrapM :: Id -> CodeGen [PISA] -> CodeGen [PISA]
-callwrapM fId codeM = liftM (callwrap fId) codeM
-
+-- | Fixed instruction for allocating memory
 getfreeCode :: [PISA]
 getfreeCode =
   callwrap (undefined, "getfree") $
-  [ LABEL "getfree"     , BNE  regFlp regZero "getfree_else"
-                        , XOR  regRet regHp
-                        , ADDI regHp 3
-                        , BRA "getfree_end"
-  , LABEL "getfree_else", BRA "getfree"
-                        , EXCH regRet regFlp   --   M(regFlp)
-                        , SWAP regRet regFlp   --   M(regFlp)
-  , LABEL "getfree_end" , BEQ  regFlp regZero "TODO..." ]
+  [ LABEL "getfree_if"     , BNE  regFlp regZero "getfree_else"
+                           , XOR  regRet regHp
+                           , ADDI regHp 3
+  , LABEL "gf_assert_true" , BRA "getfree_assert"
+  , LABEL "getfree_else"   , BRA "getfree_if"
+                           , EXCH regRet regFlp   --   M(regFlp)
+                           , SWAP regRet regFlp   --   M(regFlp)
+  , LABEL "getfree_assert" , BEQ  regFlp regZero "gf_assert_true" ]
+  -- Actually: should also assert that (regRet == regHp - 3)
+  -- Consequence of not adding this check is: ?
+
+errorCode :: [PISA]
+errorCode = [ SWAPBR regRo, FINISH ]
